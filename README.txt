@@ -20,3 +20,16 @@ mysplit.c	# Forks a child that spins for <n> seconds
 mystop.c        # Spins for <n> seconds and sends SIGTSTP to itself
 myint.c         # Spins for <n> seconds and sends SIGINT to itself
 
+Checking with trace files
+./sdriver.pl -t trace01.txt -s ./tsh -a "-p"
+
+Using sdriver
+unix> ./sdriver.pl -h
+Usage: sdriver.pl [-hv] -t <trace> -s <shellprog> -a <args>
+Options:
+    -h                  Print this message
+    -v                  Be more verbose
+    -t <trace>    Trace file
+    -s <shell>     Shell program to test
+    -a <args>     Shell arguments
+    -g                  Generate output for autograder

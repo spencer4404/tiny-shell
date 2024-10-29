@@ -61,8 +61,8 @@ void do_bgfg(char **argv);
 void waitfg(pid_t pid);
 
 void sigchld_handler(int sig);
-void sigtstp_handler(int sig);
 void sigint_handler(int sig);
+void sigtstp_handler(int sig);
 
 /* Here are helper routines that we've provided for you */
 int parseline(const char *cmdline, char **argv);
@@ -299,7 +299,72 @@ int builtin_cmd(char **argv)
  */
 void do_bgfg(char **argv)
 {
-    return;
+    struct job_t *job;
+    char *id = argv[1];
+    int jid;
+    pid_t pid;
+
+    if (id == NULL)
+    {
+        printf("%s command requires PID or %%jobid argument\n", argv[0]);
+        return;
+    }
+
+    if (id[0] == '%')
+    {
+        jid = atoi(&id[1]);
+        job = getjobjid(jobs, jid);
+        if (job == NULL)
+        {
+            printf("%s: No such job\n", id);
+            return;
+        }
+        pid = job->pid;
+    }
+    else if (isdigit(id[0]))
+    {
+        pid = atoi(id);
+        job = getjobpid(jobs, pid);
+        if (job == NULL)
+        {
+            printf("(%d): No such process\n", pid);
+            return;
+        }
+    }
+    else
+    {
+        printf("%s: argument must be a PID or %%jobid\n", argv[0]);
+        return;
+    }
+
+    if (strcmp(argv[0], "bg") == 0)
+    {
+        if (kill(-pid, SIGCONT) < 0)
+        {
+            perror("kill (bg)");
+        }
+        else
+        {
+            job->state = BG;
+            printf("[%d] (%d) %s", job->jid, job->pid, job->cmdline);
+        }
+    }
+    else if (strcmp(argv[0], "fg") == 0)
+    {
+        if (kill(-pid, SIGCONT) < 0)
+        {
+            perror("kill (fg)");
+        }
+        else
+        {
+            job->state = FG;
+            waitfg(job->pid);
+        }
+    }
+    else
+    {
+        printf("do_bgfg: Internal error\n");
+    }
 }
 
 /*
@@ -307,7 +372,10 @@ void do_bgfg(char **argv)
  */
 void waitfg(pid_t pid)
 {
-    return;
+    while (pid == fgpid(jobs))
+    {
+        usleep(1000); // Sleep for 1 millisecond
+    }
 }
 
 /*****************
@@ -323,17 +391,59 @@ void waitfg(pid_t pid)
  */
 void sigchld_handler(int sig)
 {
-    return;
+    int olderrno = errno;
+    sigset_t mask_all, prev_all;
+    pid_t pid;
+    int status;
+
+    sigfillset(&mask_all);
+    while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
+    {
+        sigprocmask(SIG_BLOCK, &mask_all, &prev_all);
+        if (WIFSTOPPED(status))
+        {
+            struct job_t *job = getjobpid(jobs, pid);
+            if (job != NULL)
+            {
+                job->state = ST;
+                printf("Job [%d] (%d) stopped by signal %d\n", job->jid, job->pid, WSTOPSIG(status));
+            }
+        }
+        else if (WIFSIGNALED(status))
+        {
+            struct job_t *job = getjobpid(jobs, pid);
+            if (job != NULL)
+            {
+                printf("Job [%d] (%d) terminated by signal %d\n", job->jid, job->pid, WTERMSIG(status));
+                deletejob(jobs, pid);
+            }
+        }
+        else if (WIFEXITED(status))
+        {
+            deletejob(jobs, pid);
+        }
+        sigprocmask(SIG_SETMASK, &prev_all, NULL);
+    }
+    errno = olderrno;
 }
 
 /*
  * sigint_handler - The kernel sends a SIGINT to the shell whenver the
  *    user types ctrl-c at the keyboard.  Catch it and send it along
  *    to the foreground job.
+ *   The shell should send a SIGINT signal to the process group of the foreground job.
  */
 void sigint_handler(int sig)
 {
-    return;
+    pid_t fg_pid = fgpid(jobs); // Get the PID of the foreground job
+
+    if (fg_pid != 0)
+    {
+        if (kill(-fg_pid, SIGINT) < 0)
+        { // Send SIGINT to the process group
+            perror("kill (sigint_handler)");
+        }
+    }
 }
 
 /*
@@ -343,7 +453,15 @@ void sigint_handler(int sig)
  */
 void sigtstp_handler(int sig)
 {
-    return;
+    pid_t fg_pid = fgpid(jobs); // Get the PID of the foreground job
+
+    if (fg_pid != 0)
+    {
+        if (kill(-fg_pid, SIGTSTP) < 0)
+        { // Send SIGTSTP to the process group
+            perror("kill (sigtstp_handler)");
+        }
+    }
 }
 
 /*********************
