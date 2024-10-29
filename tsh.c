@@ -170,10 +170,11 @@ int main(int argc, char **argv)
  */
 void eval(char *cmdline)
 {
-    char *argv[MAXARGS]; // Argument list for execve()
+    char *argv[MAXARGS]; // Argument list execve()
     char buf[MAXLINE];   // Holds modified command line
     int bg;              // Should the job run in bg or fg?
     pid_t pid;           // Process id
+    sigset_t mask_all, mask_one, prev_one;
 
     strcpy(buf, cmdline);
     bg = parseline(buf, argv);
@@ -182,9 +183,16 @@ void eval(char *cmdline)
 
     if (!builtin_cmd(argv))
     {
+        sigfillset(&mask_all);
+        sigemptyset(&mask_one);
+        sigaddset(&mask_one, SIGCHLD);
+
+        sigprocmask(SIG_BLOCK, &mask_one, &prev_one); // Block SIGCHLD
+
         if ((pid = fork()) == 0)
-        {                  // Child process
-            setpgid(0, 0); // Put the child in a new process group
+        {                                              // Child process
+            sigprocmask(SIG_SETMASK, &prev_one, NULL); // Unblock SIGCHLD
+            setpgid(0, 0);                             // Put the child in a new process group
             if (execve(argv[0], argv, environ) < 0)
             {
                 printf("%s: Command not found.\n", argv[0]);
@@ -193,15 +201,15 @@ void eval(char *cmdline)
         }
 
         // Parent process
+        addjob(jobs, pid, bg ? BG : FG, cmdline);  // Add the job to the job list
+        sigprocmask(SIG_SETMASK, &prev_one, NULL); // Unblock SIGCHLD
+
         if (!bg)
         {
-            int status;
-            if (waitpid(pid, &status, 0) < 0)
-                unix_error("waitfg: waitpid error");
+            waitfg(pid); // Wait for foreground job to terminate
         }
         else
         {
-            addjob(jobs, pid, BG, cmdline);
             printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
         }
     }
