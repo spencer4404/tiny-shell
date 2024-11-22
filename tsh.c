@@ -97,11 +97,6 @@ int main(int argc, char **argv)
     /* Redirect stderr to stdout (so that driver will get all output
      * on the pipe connected to stdout) */
     dup2(1, 2);
-    // throw an error if its less than zeroß
-    if (dup2(1, 2) < 0)
-    {
-        unix_error("dup2 error");
-    }
 
     /* Parse the command line */
     while ((c = getopt(argc, argv, "hvp")) != EOF)
@@ -192,48 +187,43 @@ void eval(char *cmdline)
     {
         sigfillset(&mask_all); // Initialize mask_all to block all signals
         // check for error
-        if (sigfillset(&mask_all) < 0)
-        {
-            unix_error("sigfillset error");
-        }
+        // if (sigfillset(&mask_all) < 0)
+        // {
+        //     unix_error("sigfillset error");
+        // }
         sigemptyset(&mask_one); // Initialize mask_one to block no signals
         // check for error
-        if (sigemptyset(&mask_one) < 0)
-        {
-            unix_error("sigemptyset error");
-        }
+        // if (sigemptyset(&mask_one) < 0)
+        // {
+        //     unix_error("sigemptyset error");
+        // }
         sigaddset(&mask_one, SIGCHLD); // Add SIGCHLD to mask_one
         // check for error
-        if (sigaddset(&mask_one, SIGCHLD) < 0)
-        {
-            unix_error("sigaddset error");
-        }
+        // if (sigaddset(&mask_one, SIGCHLD) < 0)
+        // {
+        //     unix_error("sigaddset error");
+        // }
         sigprocmask(SIG_BLOCK, &mask_one, &prev_one); // Block SIGCHLD
         // check for error
-        if (sigprocmask(SIG_BLOCK, &mask_one, &prev_one) < 0)
-        {
-            unix_error("sigprocmask error");
-        }
+        // if (sigprocmask(SIG_BLOCK, &mask_one, &prev_one) < 0)
+        // {
+        //     unix_error("sigprocmask error");
+        // }
 
-        pid = fork();
-        if (pid < 0)
-        {
-            unix_error("fork error");
-        }
-        else if ((pid = fork()) == 0)
+        if ((pid = fork()) == 0)
         {                                              // Child process
             sigprocmask(SIG_SETMASK, &prev_one, NULL); // Unblock SIGCHLD
             // check for error
-            if (sigprocmask(SIG_SETMASK, &prev_one, NULL) < 0)
-            {
-                unix_error("sigprocmask error");
-            }
+            // if (sigprocmask(SIG_SETMASK, &prev_one, NULL) < 0)
+            // {
+            //     unix_error("sigprocmask error");
+            // }
             setpgid(0, 0); // Put the child in a new process group
             // check for error
-            if (setpgid(0, 0) < 0)
-            {
-                unix_error("setpgid error");
-            }
+            // if (setpgid(0, 0) < 0)
+            // {
+            //     unix_error("setpgid error");
+            // }
             // make sure command exists
             if (execve(argv[0], argv, environ) < 0)
             {
@@ -242,13 +232,6 @@ void eval(char *cmdline)
             }
         }
 
-        // Parent process
-        sigprocmask(SIG_BLOCK, &mask_all, NULL); // Block all signals
-        // check for error
-        if (sigprocmask(SIG_BLOCK, &prev_one, NULL) < 0)
-        {
-            unix_error("sigprocmask error");
-        }
         addjob(jobs, pid, bg ? BG : FG, cmdline);  // Add the job to the job list
         sigprocmask(SIG_SETMASK, &prev_one, NULL); // Restore previous signal mask
 
@@ -452,21 +435,21 @@ void sigchld_handler(int sig)
     int status;
 
     sigfillset(&mask_all); // Initialize mask_all to block all signals
-    // check for error
-    if (sigfillset(&mask_all) < 0)
-    {
-        unix_error("sigfillset error");
-    }
+    // // check for error
+    // if (sigfillset(&mask_all) < 0)
+    // {
+    //     unix_error("sigfillset error");
+    // }
 
     // Reap all available zombie children
     while ((pid = waitpid(-1, &status, WNOHANG | WUNTRACED)) > 0)
     {
         sigprocmask(SIG_BLOCK, &mask_all, &prev_all); // Block all signals
         // check for error
-        if (sigprocmask(SIG_BLOCK, &mask_all, &prev_all) < 0)
-        {
-            unix_error("sigprocmask error");
-        }
+        // if (sigprocmask(SIG_BLOCK, &mask_all, &prev_all) < 0)
+        // {
+        //     unix_error("sigprocmask error");
+        // }
 
         // Check if the child was stopped by a signal
         if (WIFSTOPPED(status))
@@ -496,16 +479,16 @@ void sigchld_handler(int sig)
 
         sigprocmask(SIG_SETMASK, &prev_all, NULL); // Restore previous signal mask
         // check for error
-        if (sigprocmask(SIG_SETMASK, &prev_all, NULL) < 0)
-        {
-            unix_error("sigprocmask error");
-        }
+        // if (sigprocmask(SIG_SETMASK, &prev_all, NULL) < 0)
+        // {
+        //     unix_error("sigprocmask error");
+        // }
     }
     // check for error
-    if (pid < 0 && errno != ECHILD)
-    {
-        unix_error("waitpid error");
-    }
+    // if (pid < 0 && errno != ECHILD)
+    // {
+    //     unix_error("waitpid error");
+    // }
 
     errno = olderrno; // Restore the old errno value
 }
