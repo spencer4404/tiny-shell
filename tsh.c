@@ -1,7 +1,7 @@
 /*
  * tsh - A tiny shell program with job control
  *
- * <Put your name and login ID here>
+ * Spencer Iannantuono
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +12,8 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 /* Misc manifest constants */
 #define MAXLINE 1024   /* max line size */
@@ -65,7 +67,7 @@ void sigint_handler(int sig);
 void sigtstp_handler(int sig);
 
 /* Here are helper routines that we've provided for you */
-int parseline(const char *cmdline, char **argv);
+int parseline(const char *cmdline, char **argv, char **infile, char **outfile, char **errfile, int *append_out);
 void sigquit_handler(int sig);
 
 void clearjob(struct job_t *job);
@@ -157,6 +159,24 @@ int main(int argc, char **argv)
     exit(0); /* control never reaches here */
 }
 
+// for pipes
+int parsepipe(const char *cmdline, char **commands)
+{
+    char *cmd = strdup(cmdline); // Copy cmdline to a modifiable string
+    char *next = strtok(cmd, "|");
+    int count = 0;
+
+    while (next != NULL)
+    {
+        commands[count++] = strdup(next); // Store each command
+        next = strtok(NULL, "|");
+    }
+
+    commands[count] = NULL; // Null-terminate the array
+    free(cmd);
+    return count; // Return the number of commands in the pipeline
+}
+
 /*
  * eval - Evaluate the command line that the user has just typed in
  *
@@ -170,82 +190,181 @@ int main(int argc, char **argv)
  */
 void eval(char *cmdline)
 {
-    char *argv[MAXARGS];                   // Argument list for execve()
+    char *commands[MAXARGS];               // Store pipeline commands
     char buf[MAXLINE];                     // Holds modified command line
+    char *argv[MAXARGS];                   // Argument list for execve()
+    char *infile, *outfile, *errfile;      // File names for redirection
+    int append_out = 0;                    // Append mode flag
+    int num_commands;                      // Number of pipeline commands
     int bg;                                // Should the job run in bg or fg?
     pid_t pid;                             // Process id
+    int pipefds[2 * MAXARGS];              // Pipe file descriptors
     sigset_t mask_all, mask_one, prev_one; // Signal masks for blocking/unblocking signals
 
-    // Copy the command line to the buffer
     strcpy(buf, cmdline);
-    bg = parseline(buf, argv); // Parse the command line and determine if it should run in the background
-    if (argv[0] == NULL)
-        return; // Ignore empty lines
+    num_commands = parsepipe(buf, commands); // Split the command into pipeline components
 
-    // Check if the command is a built-in command
-    if (!builtin_cmd(argv))
+    if (num_commands == 1) // Single command, no pipe
     {
-        sigfillset(&mask_all); // Initialize mask_all to block all signals
-        // check for error
-        // if (sigfillset(&mask_all) < 0)
-        // {
-        //     unix_error("sigfillset error");
-        // }
-        sigemptyset(&mask_one); // Initialize mask_one to block no signals
-        // check for error
-        // if (sigemptyset(&mask_one) < 0)
-        // {
-        //     unix_error("sigemptyset error");
-        // }
-        sigaddset(&mask_one, SIGCHLD); // Add SIGCHLD to mask_one
-        // check for error
-        // if (sigaddset(&mask_one, SIGCHLD) < 0)
-        // {
-        //     unix_error("sigaddset error");
-        // }
-        sigprocmask(SIG_BLOCK, &mask_one, &prev_one); // Block SIGCHLD
-        // check for error
-        // if (sigprocmask(SIG_BLOCK, &mask_one, &prev_one) < 0)
-        // {
-        //     unix_error("sigprocmask error");
-        // }
+        bg = parseline(buf, argv, &infile, &outfile, &errfile, &append_out);
+        if (argv[0] == NULL)
+            return; // Ignore empty lines
 
-        if ((pid = fork()) == 0)
-        {                                              // Child process
-            sigprocmask(SIG_SETMASK, &prev_one, NULL); // Unblock SIGCHLD
-            // check for error
-            // if (sigprocmask(SIG_SETMASK, &prev_one, NULL) < 0)
-            // {
-            //     unix_error("sigprocmask error");
-            // }
-            setpgid(0, 0); // Put the child in a new process group
-            // check for error
-            // if (setpgid(0, 0) < 0)
-            // {
-            //     unix_error("setpgid error");
-            // }
-            // make sure command exists
-            if (execve(argv[0], argv, environ) < 0)
+        if (!builtin_cmd(argv)) // Check for built-in commands first
+        {
+            sigfillset(&mask_all);
+            sigemptyset(&mask_one);
+            sigaddset(&mask_one, SIGCHLD);
+            sigprocmask(SIG_BLOCK, &mask_one, &prev_one);
+
+            if ((pid = fork()) == 0) // Child process
             {
-                printf("%s: Command not found.\n", argv[0]);
-                exit(0);
+                sigprocmask(SIG_SETMASK, &prev_one, NULL);
+                setpgid(0, 0);
+
+                // Handle input redirection
+                if (infile)
+                {
+                    int fd = open(infile, O_RDONLY);
+                    if (fd < 0)
+                    {
+                        perror("open error for input redirection");
+                        exit(1);
+                    }
+                    dup2(fd, STDIN_FILENO);
+                    close(fd);
+                }
+
+                // Handle output redirection
+                if (outfile)
+                {
+                    int fd = open(outfile, O_WRONLY | O_CREAT | (append_out ? O_APPEND : O_TRUNC), 0644);
+                    if (fd < 0)
+                    {
+                        perror("open error for output redirection");
+                        exit(1);
+                    }
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                }
+
+                // Handle error redirection
+                if (errfile)
+                {
+                    int fd = open(errfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                    if (fd < 0)
+                    {
+                        perror("open error for error redirection");
+                        exit(1);
+                    }
+                    dup2(fd, STDERR_FILENO);
+                    close(fd);
+                }
+
+                // Execute the command
+                if (execvp(argv[0], argv) < 0)
+                {
+                    perror("Command execution error");
+                    exit(1);
+                }
+            }
+
+            addjob(jobs, pid, bg ? BG : FG, cmdline);
+            sigprocmask(SIG_SETMASK, &prev_one, NULL);
+
+            if (!bg)
+            {
+                waitfg(pid); // Wait for foreground job to finish
+            }
+            else
+            {
+                printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline); // Print background job details
+            }
+        }
+    }
+    else // Handle pipelines
+    {
+        int i, status;
+
+        // Create pipes
+        for (i = 0; i < num_commands - 1; i++)
+        {
+            if (pipe(pipefds + i * 2) < 0)
+            {
+                perror("pipe error");
+                exit(1);
             }
         }
 
-        addjob(jobs, pid, bg ? BG : FG, cmdline);  // Add the job to the job list
-        sigprocmask(SIG_SETMASK, &prev_one, NULL); // Restore previous signal mask
+        for (i = 0; i < num_commands; i++)
+        {
+            bg = parseline(commands[i], argv, &infile, &outfile, &errfile, &append_out);
 
-        // If the job is running in the foreground, wait for it to finish
-        if (!bg)
-        {
-            waitfg(pid);
+            if ((pid = fork()) == 0) // Child process
+            {
+                // Set up pipes
+                if (i > 0) // Not the first command; get input from the previous pipe
+                {
+                    dup2(pipefds[(i - 1) * 2], STDIN_FILENO);
+                }
+                if (i < num_commands - 1) // Not the last command; output to the next pipe
+                {
+                    dup2(pipefds[i * 2 + 1], STDOUT_FILENO);
+                }
+
+                // Close all pipe file descriptors
+                for (int j = 0; j < 2 * (num_commands - 1); j++)
+                {
+                    close(pipefds[j]);
+                }
+
+                // Handle input redirection for the first command
+                if (i == 0 && infile)
+                {
+                    int fd = open(infile, O_RDONLY);
+                    if (fd < 0)
+                    {
+                        perror("open error for input redirection");
+                        exit(1);
+                    }
+                    dup2(fd, STDIN_FILENO);
+                    close(fd);
+                }
+
+                // Handle output redirection for the last command
+                if (i == num_commands - 1 && outfile)
+                {
+                    int fd = open(outfile, O_WRONLY | O_CREAT | (append_out ? O_APPEND : O_TRUNC), 0644);
+                    if (fd < 0)
+                    {
+                        perror("open error for output redirection");
+                        exit(1);
+                    }
+                    dup2(fd, STDOUT_FILENO);
+                    close(fd);
+                }
+
+                // Execute the command
+                if (execvp(argv[0], argv) < 0)
+                {
+                    perror("Command execution error");
+                    exit(1);
+                }
+            }
         }
-        else
+
+        // Close all pipe file descriptors in the parent
+        for (i = 0; i < 2 * (num_commands - 1); i++)
         {
-            printf("[%d] (%d) %s", pid2jid(pid), pid, cmdline);
+            close(pipefds[i]);
+        }
+
+        // Wait for all child processes to finish
+        for (i = 0; i < num_commands; i++)
+        {
+            wait(&status);
         }
     }
-    return;
 }
 
 /*
@@ -255,62 +374,109 @@ void eval(char *cmdline)
  * argument.  Return true if the user has requested a BG job, false if
  * the user has requested a FG job.
  */
-int parseline(const char *cmdline, char **argv)
+int parseline(const char *cmdline, char **argv, char **infile, char **outfile, char **errfile, int *append_out)
 {
-    static char array[MAXLINE]; // holds local copy of command line
-    char *buf = array;          // ptr that traverses command line
-    char *delim;                // points to first space delimiter
-    int argc;                   // number of args
-    int bg;                     // background job?
+    static char array[MAXLINE]; // Holds local copy of command line
+    char *buf = array;          // Pointer that traverses command line
+    char *delim;                // Points to first delimiter
+    int argc;                   // Number of args
+    int bg;                     // Background job?
+
+    *infile = NULL;
+    *outfile = NULL;
+    *errfile = NULL;
+    *append_out = 0; // Initialize to 0 (overwrite mode)
 
     strcpy(buf, cmdline);
-    buf[strlen(buf) - 1] = ' ';   // replace trailing '\n' with space
-    while (*buf && (*buf == ' ')) // ignore leading spaces
+    buf[strlen(buf) - 1] = ' ';   // Replace trailing '\n' with space
+    while (*buf && (*buf == ' ')) // Ignore leading spaces
         buf++;
 
-    // Build the argv list
     argc = 0;
-    if (*buf == '\'')
+
+    while (*buf)
     {
-        buf++;
-        delim = strchr(buf, '\'');
-    }
-    else
-    {
-        delim = strchr(buf, ' ');
-    }
-    // Parse the command line into arguments
-    while (delim)
-    {
-        argv[argc++] = buf;
-        *delim = '\0';
-        buf = delim + 1;
-        // Skip spaces
-        while (*buf && (*buf == ' ')) // ignore spaces
+        // Skip over spaces
+        while (*buf == ' ')
             buf++;
-        // Check for single quotes
-        if (*buf == '\'')
+
+        if (*buf == '\0')
+            break;
+
+        if (strncmp(buf, "2>", 2) == 0)
+        {
+            buf += 2;
+            while (*buf == ' ')
+                buf++;
+            delim = strchr(buf, ' ');
+            if (delim)
+                *delim = '\0';
+            *errfile = buf;
+            if (delim)
+                buf = delim + 1;
+            else
+                buf += strlen(buf);
+        }
+        else if (*buf == '<')
         {
             buf++;
-            delim = strchr(buf, '\'');
+            while (*buf == ' ')
+                buf++;
+            delim = strchr(buf, ' ');
+            if (delim)
+                *delim = '\0';
+            *infile = buf;
+            if (delim)
+                buf = delim + 1;
+            else
+                buf += strlen(buf);
         }
-        // Check for spaces
+        else if (*buf == '>')
+        {
+            buf++;
+            if (*buf == '>')
+            {
+                buf++;
+                *append_out = 1; // Set append mode
+            }
+            while (*buf == ' ')
+                buf++;
+            delim = strchr(buf, ' ');
+            if (delim)
+                *delim = '\0';
+            *outfile = buf;
+            if (delim)
+                buf = delim + 1;
+            else
+                buf += strlen(buf);
+        }
         else
         {
+            // Regular argument
+            argv[argc++] = buf;
             delim = strchr(buf, ' ');
+            if (delim)
+            {
+                *delim = '\0';
+                buf = delim + 1;
+            }
+            else
+            {
+                buf += strlen(buf);
+            }
         }
     }
-    // Add the last argument
+
     argv[argc] = NULL;
-    // Ignore empty lines
-    if (argc == 0)
+
+    if (argc == 0) // Ignore blank line
         return 1;
 
-    // check if job should be run in background
     if ((bg = (*argv[argc - 1] == '&')) != 0)
     {
         argv[--argc] = NULL;
     }
+
     return bg;
 }
 
